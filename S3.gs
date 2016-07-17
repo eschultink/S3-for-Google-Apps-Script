@@ -200,6 +200,19 @@ S3.prototype.deleteObject = function (bucket, objectName, options) {
 };
 
 
+S3.prototype.getSignedUrl = function(bucket, objectName, options) {
+  options = options || {};
+  
+  var request = new S3Request(this);
+  request.setHttpMethod('GET');
+  
+  request.setBucket(bucket);
+  request.setObjectName(objectName);
+
+  // return request.calculateSignature_(options);
+  return request.getSignedUrl(options);
+}
+
 //for debugging
 S3.prototype.getLastExchangeLog = function() {
   return this.lastExchangeLog; 

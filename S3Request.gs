@@ -187,22 +187,185 @@ S3Request.prototype.execute = function(options) {
   return response;
 };
 
+S3Request.prototype.getSignedUrl = function(options) {
+  var url = this.getUrl();
+  var accessKeyId = this.service.accessKeyId;
+  var expires = 86400;
+  if ( !("expires" in options) ) {
+    // expires = options["expires"];
+    options["expires"] = expires;
+  }
+  // expires += Math.round(Date.now() / 1000);
+  // options["expires"] = expires;
+  var signature = this.calculateSignature_(options);
 
-/* computes Authorization Header value for S3 request
- * reference http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
- *
- * @private
- * @return {string} base64 encoded HMAC-SHA1 signature of request (see AWS Rest auth docs for details)
- */
-S3Request.prototype.getAuthHeader_ = function () {
-    
-//  StringToSign = HTTP-VERB + "\n" +
-//    Content-MD5 + "\n" +
-//    Content-Type + "\n" +
-//    Date + "\n" +
-//    CanonicalizedAmzHeaders +
-//    CanonicalizedResource;    
-  var stringToSign = this.httpMethod + "\n";
+  return signature;
+
+  // url += "?AWSAccessKeyId=" + accessKeyId;
+  // url += "&Expires=" + expires;
+  // url += "&Signature=" + signature;
+
+  // return url;
+}
+
+S3Request.prototype.calculateSignature_ = function(options) {
+
+  // var options = this.service.options;
+  // Logger.log("Options:\n" + JSON.stringify(options));
+
+  // 1a. CanonicalRequest
+  // https://s3.amazonaws.com/examplebucket/test.txt
+  // ?X-Amz-Algorithm=AWS4-HMAC-SHA256
+  // &X-Amz-Credential=<your-access-key-id>/20130721/us-east-1/s3/aws4_request
+  // &X-Amz-Date=20130721T201207Z
+  // &X-Amz-Expires=86400
+  // &X-Amz-SignedHeaders=host
+  // &X-Amz-Signature=<signature-value> 
+
+  var canonicalRequest = "";
+
+  //    i. HTTP verb
+  canonicalRequest += this.httpMethod + "\n";
+
+  //    ii. Canonical URI
+  var canonicalizedResource = this.getUrl().replace("http://"+this.bucket.toLowerCase()+".s3.amazonaws.com","");
+  canonicalizedResource = encodeURIComponent(canonicalizedResource).replace("%2F", "/");
+  canonicalRequest += canonicalizedResource + "\n";
+
+  //    iii. Canonical Query String
+  var canonicalQueryString = "";
+  var qsDelimiter = "%2F"
+
+  //          - algorithm
+  var amzAlgorithm = "AWS4-HMAC-SHA256";
+  canonicalQueryString += "X-Amz-Algorithm=" + amzAlgorithm;
+
+  //          - credentials
+  var date = new Date();
+  if (options && "signatureTesting" in options && options.signatureTesting == true) {
+      date = new Date(Date.UTC("2013", "05", "24")); // testing
+  }
+  var dateStr = date.getUTCFullYear() + ("0" + (date.getUTCMonth()+0) ).slice(-2) + ("0" + date.getUTCDate()).slice(-2)
+  var region = "us-east-1"; // default region
+  if (options.hasOwnProperty("region")) {
+    region = options.region;
+  }
+  canonicalQueryString += "&X-Amz-Credential=" + this.service.accessKeyId + qsDelimiter + dateStr + qsDelimiter + region + qsDelimiter + "s3" + qsDelimiter + "aws4_request";
+
+  //          - date
+  var timeStr = ("0" + date.getUTCHours()).slice(-2) + ("0" + date.getUTCMinutes()).slice(-2) + ("0" + date.getUTCSeconds()).slice(-2);
+  var timestamp = dateStr + "T" + timeStr + "Z"; // utc
+  canonicalQueryString += "&X-Amz-Date=" + timestamp;
+
+
+  //          - expires
+  var expires = 86400; // 24 hours
+  if (options.hasOwnProperty("expires")) {
+    expires = options.expires;
+  }
+  canonicalQueryString += "&X-Amz-Expires=" + expires;
+
+
+  //          - signed headers
+  var amzHeaders = ["host:" + this.bucket.toLowerCase()+".s3.amazonaws.com"]; //, "x-amz-date:" + timestamp];
+  var signedHeaders = ["host"]; //, "x-amz-date"];
+  var headerStr;
+
+  for (var headerName in this.headers) {
+    // only AMZ headers
+    // convert to lower case (1)
+    // multi-line headers to single line (4)
+    // one space after : (5)
+    if (headerName.match(/^x-amz/i)) {
+      var header = headerName.toLowerCase() + ":" + this.headers[headerName].replace(/\s+/, " ");
+      amzHeaders.push(header);
+      signedHeaders.push(headerName.toLowerCase());
+    }
+  }
+
+  headerStr = amzHeaders.sort().join("\n");
+  canonicalQueryString += "&X-Amz-SignedHeaders=" + signedHeaders.sort().join(";"); // <- TODO: figure out if this is the right delimiter
+
+
+  canonicalRequest += canonicalQueryString + "\n";
+
+  //    iv. Canonical Headers
+  canonicalRequest += headerStr + "\n";
+  canonicalRequest +=  "\n"; // <- TODO: figure out what to put here
+
+
+  //    v. Signed Headers
+  canonicalRequest += signedHeaders.sort().join(";") + "\n";
+
+  
+  //    vi. Unsigned Payload
+  canonicalRequest += "UNSIGNED-PAYLOAD";
+  Logger.log("CanonicalRequest:\n" + canonicalRequest);
+
+
+
+  // 1b. StringToSign
+  var stringToSign = "";
+
+  // algorithm
+  stringToSign += amzAlgorithm + "\n";
+
+  // date
+  stringToSign += timestamp + "\n";
+
+  // scope
+  stringToSign += dateStr + "/" + region + "/" + "s3" + "/" + "aws4_request" + "\n";
+
+  // hexed and hashed
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, canonicalRequest, Utilities.Charset.UTF_8);
+  var digestStr = this.bytearrayToHex_(digest);
+
+  stringToSign += digestStr;
+  Logger.log("StringToSign:\n" + stringToSign);
+
+  // stringToSign = "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n3bfa292879f6447bbcda7001decf97f4a54dc650c8942174ae0a9121cf58ad04";
+
+
+  // 2. SigningKey
+  // NOTE: We have to use the CryptoJS.HmacSHA256 here because it's broken with Utilities.computeHmacSha256Signature
+  // TODO: figure out exactly why this is so ^
+  
+  // var dateKey = this.unsignBytearray_(Utilities.computeHmacSha256Signature(dateStr, "AWS4" + this.service.secretAccessKey, Utilities.Charset.UTF_8));
+  // Logger.log("dateKey:\n" + this.bytearrayToHex_(dateKey));
+  // var dateRegionKey = this.unsignBytearray_(Utilities.computeHmacSha256Signature(region, dateKey, Utilities.Charset.UTF_8));
+  // var dateRegionServiceKey = this.unsignBytearray_(Utilities.computeHmacSha256Signature("s3", dateRegionKey, Utilities.Charset.UTF_8));
+  // var signingKey = this.unsignBytearray_(Utilities.computeHmacSha256Signature("aws4_request", dateRegionServiceKey, Utilities.Charset.UTF_8));
+  // Logger.log("SigningKey:\n" + this.bytearrayToHex_(signingKey));
+
+  signingKey = this.getSignatureKey_(this.service.secretAccessKey, dateStr, region, "s3");
+  Logger.log("SigningKey:\n" + signingKey.toString());
+
+
+  // 3. Signature
+  
+  // var signature = this.bytearrayToHex_(Utilities.computeHmacSha256Signature(stringToSign, signingKey, Utilities.Charset.UTF_8));
+  // Logger.log("Signature:\n" + signature);
+
+  var signature = CryptoJS.HmacSHA256(stringToSign, signingKey, { asBytes: true });
+  Logger.log("Signature:\n" + signature.toString());
+
+  // return signature;
+
+  var url = this.getUrl();
+  url += "?" + canonicalQueryString
+  url += "&X-Amz-Signature=" + signature;
+  return url;
+
+  // OLD VERSION
+
+  /*
+  //  StringToSign = HTTP-VERB + "\n" +
+  //    Content-MD5 + "\n" +
+  //    Content-Type + "\n" +
+  //    Date + "\n" +
+  //    CanonicalizedAmzHeaders +
+  //    CanonicalizedResource;    
+    var stringToSign = this.httpMethod + "\n";
   
   var contentLength = this.content.length;
   stringToSign += this.getContentMd5_() + "\n" ;
@@ -236,13 +399,62 @@ S3Request.prototype.getAuthHeader_ = function () {
   var canonicalizedResource = "/" + this.bucket.toLowerCase() + this.getUrl().replace("http://"+this.bucket.toLowerCase()+".s3.amazonaws.com","");
   stringToSign += canonicalizedResource;
   
-//  Logger.log("-- string to sign --\n"+stringToSign);
+  //  Logger.log("-- string to sign --\n"+stringToSign);
   
   //Signature = Base64( HMAC-SHA1( YourSecretAccessKeyID, UTF-8-Encoding-Of( StringToSign ) ) );  
   var signature = Utilities.base64Encode(Utilities.computeHmacSignature(Utilities.MacAlgorithm.HMAC_SHA_1, 
                                                                         stringToSign, 
                                                                         this.service.secretAccessKey, 
                                                                         Utilities.Charset.UTF_8));
+
+  return signature;
+  */
+};
+
+S3Request.prototype.bytearrayToHex_ = function(byteArr) {
+  var hexStr = "";
+  for (var i=0; i<byteArr.length; i++) {
+    var b = byteArr[i];
+    if (b < 0) {
+      b += 256;
+    }
+    var bStr = b.toString(16);
+    if (bStr.length == 1) {
+      bStr = "0" + bStr;
+    }
+    hexStr += bStr;
+  }
+  return hexStr;
+};
+
+S3Request.prototype.unsignBytearray_ = function(byteArr) {
+  for (var i=0; i<byteArr.length; i++) {
+    if (byteArr[i] < 0) {
+      byteArr[i] += 256;
+    }
+  }
+  return byteArr;
+};
+
+S3Request.prototype.getSignatureKey_ = function(key, dateStamp, regionName, serviceName) {
+
+   var kDate= CryptoJS.HmacSHA256(dateStamp, "AWS4" + key, { asBytes: true})
+   var kRegion= CryptoJS.HmacSHA256(regionName, kDate, { asBytes: true });
+   var kService=CryptoJS.HmacSHA256(serviceName, kRegion, { asBytes: true });
+   var kSigning= CryptoJS.HmacSHA256("aws4_request", kService, { asBytes: true });
+
+   return kSigning;
+};
+
+/* computes Authorization Header value for S3 request
+ * reference http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
+ *
+ * @private
+ * @return {string} base64 encoded HMAC-SHA1 signature of request (see AWS Rest auth docs for details)
+ */
+S3Request.prototype.getAuthHeader_ = function () {
+    
+  var signature = this.calculateSignature_();
       
   return "AWS " + this.service.accessKeyId + ':' + signature; 
 };

@@ -370,6 +370,9 @@ S3Request.prototype.authenticate = function(options, mode) {
   var url = this.getUrl();
   url += "?" + canonicalQueryString
   url += "&X-Amz-Signature=" + signature;
+
+  url = url.replace(/ /g, "%20");
+
   return url;
 
   // OLD VERSION

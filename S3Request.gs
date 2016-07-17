@@ -187,6 +187,11 @@ S3Request.prototype.execute = function(options) {
   return response;
 };
 
+/* get a presigned URL for an object
+ * @author David Su <david.d.su@gmail.com>
+ * @param {Object} options options to be passed in ("expires", "testing")
+ * @return {string} the URL
+ */ 
 S3Request.prototype.getSignedUrl = function(options) {
   var url = this.getUrl();
   var accessKeyId = this.service.accessKeyId;
@@ -197,18 +202,27 @@ S3Request.prototype.getSignedUrl = function(options) {
   }
   // expires += Math.round(Date.now() / 1000);
   // options["expires"] = expires;
-  var signature = this.calculateSignature_(options);
+  var url = this.authenticate(options, "url");
 
-  return signature;
+  return url;
 
+  // format from AWS SDK
   // url += "?AWSAccessKeyId=" + accessKeyId;
   // url += "&Expires=" + expires;
   // url += "&Signature=" + signature;
 
   // return url;
-}
+};
 
-S3Request.prototype.calculateSignature_ = function(options) {
+/* authenticate a request using query parameters according to
+ * AWS Signature Version 4
+ * @author David Su <david.d.su@gmail.com>
+ *
+ * @param {Object} options options to be passed in ("expires", "testing")
+ * @param {string} mode determine what to return: "signature" or "url"
+ * @return {string} the final URL or signature
+ */ 
+S3Request.prototype.authenticate = function(options, mode) {
 
   // var options = this.service.options;
   // Logger.log("Options:\n" + JSON.stringify(options));
@@ -229,7 +243,7 @@ S3Request.prototype.calculateSignature_ = function(options) {
 
   //    ii. Canonical URI
   var canonicalizedResource = this.getUrl().replace("http://"+this.bucket.toLowerCase()+".s3.amazonaws.com","");
-  canonicalizedResource = encodeURIComponent(canonicalizedResource).replace("%2F", "/");
+  canonicalizedResource = encodeURIComponent(canonicalizedResource).replace(/%2F/g, "/");
   canonicalRequest += canonicalizedResource + "\n";
 
   //    iii. Canonical Query String
@@ -243,9 +257,9 @@ S3Request.prototype.calculateSignature_ = function(options) {
   //          - credentials
   var date = new Date();
   if (options && "signatureTesting" in options && options.signatureTesting == true) {
-      date = new Date(Date.UTC("2013", "05", "24")); // testing
+      date = new Date(Date.UTC("2013", "04", "24")); // testing with default
   }
-  var dateStr = date.getUTCFullYear() + ("0" + (date.getUTCMonth()+0) ).slice(-2) + ("0" + date.getUTCDate()).slice(-2)
+  var dateStr = date.getUTCFullYear() + ("0" + (date.getUTCMonth()+1) ).slice(-2) + ("0" + date.getUTCDate()).slice(-2)
   var region = "us-east-1"; // default region
   if (options.hasOwnProperty("region")) {
     region = options.region;
@@ -300,7 +314,7 @@ S3Request.prototype.calculateSignature_ = function(options) {
   
   //    vi. Unsigned Payload
   canonicalRequest += "UNSIGNED-PAYLOAD";
-  Logger.log("CanonicalRequest:\n" + canonicalRequest);
+  // Logger.log("CanonicalRequest:\n" + canonicalRequest);
 
 
 
@@ -321,7 +335,7 @@ S3Request.prototype.calculateSignature_ = function(options) {
   var digestStr = this.bytearrayToHex_(digest);
 
   stringToSign += digestStr;
-  Logger.log("StringToSign:\n" + stringToSign);
+  // Logger.log("StringToSign:\n" + stringToSign);
 
   // stringToSign = "AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n3bfa292879f6447bbcda7001decf97f4a54dc650c8942174ae0a9121cf58ad04";
 
@@ -337,8 +351,8 @@ S3Request.prototype.calculateSignature_ = function(options) {
   // var signingKey = this.unsignBytearray_(Utilities.computeHmacSha256Signature("aws4_request", dateRegionServiceKey, Utilities.Charset.UTF_8));
   // Logger.log("SigningKey:\n" + this.bytearrayToHex_(signingKey));
 
-  signingKey = this.getSignatureKey_(this.service.secretAccessKey, dateStr, region, "s3");
-  Logger.log("SigningKey:\n" + signingKey.toString());
+  var signingKey = this.getSignatureKey_(this.service.secretAccessKey, dateStr, region, "s3");
+  // Logger.log("SigningKey:\n" + signingKey.toString());
 
 
   // 3. Signature
@@ -347,9 +361,11 @@ S3Request.prototype.calculateSignature_ = function(options) {
   // Logger.log("Signature:\n" + signature);
 
   var signature = CryptoJS.HmacSHA256(stringToSign, signingKey, { asBytes: true });
-  Logger.log("Signature:\n" + signature.toString());
+  // Logger.log("Signature:\n" + signature.toString());
 
-  // return signature;
+  if (mode == "signature") {
+    return signature;
+  }
 
   var url = this.getUrl();
   url += "?" + canonicalQueryString
@@ -411,6 +427,14 @@ S3Request.prototype.calculateSignature_ = function(options) {
   */
 };
 
+
+/* convert an array of signed bytes to hex encoding
+ * @author David Su <david.d.su@gmail.com>
+ *
+ * @private
+ * @param {Array} byteArr the array of bytes
+ * @return {string} the hex-encoded string
+ */
 S3Request.prototype.bytearrayToHex_ = function(byteArr) {
   var hexStr = "";
   for (var i=0; i<byteArr.length; i++) {
@@ -427,6 +451,13 @@ S3Request.prototype.bytearrayToHex_ = function(byteArr) {
   return hexStr;
 };
 
+/* convert an array of signed bytes to unsigned bytes
+ * @author David Su <david.d.su@gmail.com>
+ *
+ * @private
+ * @param {Array} byteArr the array of bytes
+ * @return {Array} the array of unsigned bytes
+ */
 S3Request.prototype.unsignBytearray_ = function(byteArr) {
   for (var i=0; i<byteArr.length; i++) {
     if (byteArr[i] < 0) {
@@ -436,6 +467,17 @@ S3Request.prototype.unsignBytearray_ = function(byteArr) {
   return byteArr;
 };
 
+/* calculate the key used to sign signature according to AWS Signature v4
+ * from the examples at http://docs.aws.amazon.com/general/latest/gr/signature-v4-examples.html
+ * NOTE: make sure asBytes is set to true!
+ *
+ * @private
+ * @param {string} key base64-encoded key
+ * @param {string} dateStamp the date in format <yyyymmdd>
+ * @param {string} regionName name of the region, e.g. "us-east-1"
+ * @param {string} serviceName name of the service, e.g. "s3" or "iam"
+ * @return {string} base64-encoded signing key
+ */
 S3Request.prototype.getSignatureKey_ = function(key, dateStamp, regionName, serviceName) {
 
    var kDate= CryptoJS.HmacSHA256(dateStamp, "AWS4" + key, { asBytes: true})
@@ -454,7 +496,7 @@ S3Request.prototype.getSignatureKey_ = function(key, dateStamp, regionName, serv
  */
 S3Request.prototype.getAuthHeader_ = function () {
     
-  var signature = this.calculateSignature_();
+  var signature = this.authenticate({}, "signature");
       
   return "AWS " + this.service.accessKeyId + ':' + signature; 
 };

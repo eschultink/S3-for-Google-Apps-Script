@@ -95,7 +95,7 @@ S3Request.prototype.setObjectName = function(objectName) {
 S3Request.prototype.addHeader = function(name, value) {
   if (typeof name != 'string') throw "header name must be string";
   if (typeof value != 'string') throw "header value must be string";
-  this.headers[name] = value; 
+  this.headers[name] = /^[\x00-\x7F]*$/.test(value) ? value : Utilities.base64Encode(value); 
   return this;
 };
 
@@ -117,7 +117,13 @@ S3Request.prototype.getUrl = function() {
  */
 S3Request.prototype.execute = function(options) {
   options = options || {};
-  
+  for (var i in Object.keys(options)) {
+    var key = Object.keys(options)[i]
+    if (key.match(/^x-amz/i)) {
+      this.addHeader(key, options[key])
+    }
+  }
+
   this.headers.Authorization = this.getAuthHeader_();
   this.headers.Date = this.date.toUTCString();
   if (this.content.length > 0) {

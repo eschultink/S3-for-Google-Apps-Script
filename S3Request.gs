@@ -14,6 +14,10 @@ function S3Request(service) {
   this.headers = {};
   
   this.date = new Date();
+  this.serviceName = 's3';
+  this.region = 'us-east-1';
+  this.expiresHeader = 'presigned-expires';
+  this.extQueryString = '';
 }
 
 /* sets contenetType of the request
@@ -95,15 +99,18 @@ S3Request.prototype.setObjectName = function(objectName) {
 S3Request.prototype.addHeader = function(name, value) {
   if (typeof name != 'string') throw "header name must be string";
   if (typeof value != 'string') throw "header value must be string";
-  this.headers[name] = /^[\x00-\x7F]*$/.test(value) ? value : Utilities.base64Encode(value); 
+  this.headers[name] = /^[\x00-\x7F]*$/.test(value) ? value : encodeURIComponent(value); 
   return this;
 };
 
+S3Request.prototype._getUrl = function() {
+  return "https://" + this.bucket.toLowerCase() + ".s3." + this.region + ".amazonaws.com/" + this.objectName;
+};
 /* gets Url for S3 request 
  * @return {string} url to which request will be sent
  */
 S3Request.prototype.getUrl = function() {
-  return "http://" + this.bucket.toLowerCase() + ".s3.amazonaws.com/" + this.objectName;
+  return this._getUrl() + this.extQueryString;
 };
 /* executes the S3 request and returns HttpResponse
  *
@@ -117,19 +124,33 @@ S3Request.prototype.getUrl = function() {
  */
 S3Request.prototype.execute = function(options) {
   options = options || {};
-  for (var i in Object.keys(options)) {
-    var key = Object.keys(options)[i]
+  for (var key in options) {
     if (key.match(/^x-amz/i)) {
       this.addHeader(key, options[key])
     }
   }
 
-  this.headers.Authorization = this.getAuthHeader_();
-  this.headers.Date = this.date.toUTCString();
-  if (this.content.length > 0) {
-    this.headers["Content-MD5"] = this.getContentMd5_();
+  var dateStr = this.date.toISOString().replace(/[:\-]|\.\d{3}/g, '');
+  if (this.isPresigned()) {
+    this.updateForPresigned(credentials, datetime);
+  } else {
+    this.headers['X-Amz-Date'] = dateStr;
   }
-  
+
+  if (this.content.length > 0) {
+    this.headers['X-Amz-Content-Sha256'] = this.hexEncodedBodyHash();
+    this.headers['x-amz-storage-class'] = 'REDUCED_REDUNDANCY';
+    // this.headers['Content-Encoding'] = 'aws-chunked'
+    // this.headers['Content-Length'] = 1111
+    // this.headers['x-amz-decoded-content-length'] = this.content.length;
+    // this.headers["Content-MD5"] = this.getContentMd5_();
+  }
+
+  this.headers.Host = this._getUrl().replace(/https?:\/\/(.+amazonaws\.com).*/, '$1');
+  this.headers.Date = this.date.toUTCString();
+  this.headers.Authorization = this.authorization(this.service.secretAccessKey, dateStr)
+  delete this.headers.Host
+
   var params = {
     method: this.httpMethod,
     payload: this.content,
@@ -193,66 +214,6 @@ S3Request.prototype.execute = function(options) {
   return response;
 };
 
-
-/* computes Authorization Header value for S3 request
- * reference http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
- *
- * @private
- * @return {string} base64 encoded HMAC-SHA1 signature of request (see AWS Rest auth docs for details)
- */
-S3Request.prototype.getAuthHeader_ = function () {
-    
-//  StringToSign = HTTP-VERB + "\n" +
-//    Content-MD5 + "\n" +
-//    Content-Type + "\n" +
-//    Date + "\n" +
-//    CanonicalizedAmzHeaders +
-//    CanonicalizedResource;    
-  var stringToSign = this.httpMethod + "\n";
-  
-  var contentLength = this.content.length;
-  stringToSign += this.getContentMd5_() + "\n" ;
-  stringToSign += this.getContentType() + "\n";
-
-  
-  //set expires time 60 seconds into future
-  stringToSign += this.date.toUTCString() + "\n";
-
-
-  // Construct Canonicalized Amazon Headers
-  //http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html#RESTAuthenticationRequestCanonicalization
-  var amzHeaders = [];
-  
-  for (var headerName in this.headers) {
-    // only AMZ headers
-    // convert to lower case (1)
-    // multi-line headers to single line (4)
-    // one space after : (5)
-    if (headerName.match(/^x-amz/i)) {
-      var header = headerName.toLowerCase() + ":" + this.headers[headerName].replace(/\s+/, " ");
-      amzHeaders.push(header) 
-    }
-  }
-  // (3) is just that multiple values of the same header must be passed as CSV, rather than listed multiple times; implicit
-  // sort lexographically (2), and combine into string w single \n separating each (6)
-  if (amzHeaders.length > 0) {
-    stringToSign += amzHeaders.sort().join("\n") + "\n";
-  }
-  
-  var canonicalizedResource = "/" + this.bucket.toLowerCase() + this.getUrl().replace("http://"+this.bucket.toLowerCase()+".s3.amazonaws.com","");
-  stringToSign += canonicalizedResource;
-  
-//  Logger.log("-- string to sign --\n"+stringToSign);
-  
-  //Signature = Base64( HMAC-SHA1( YourSecretAccessKeyID, UTF-8-Encoding-Of( StringToSign ) ) );  
-  var signature = Utilities.base64Encode(Utilities.computeHmacSignature(Utilities.MacAlgorithm.HMAC_SHA_1, 
-                                                                        stringToSign, 
-                                                                        this.service.secretAccessKey, 
-                                                                        Utilities.Charset.UTF_8));
-      
-  return "AWS " + this.service.accessKeyId + ':' + signature; 
-};
-
 /* calculates Md5 for the content (http request body) of the S3 request
  *   (Content-MD5 on S3 is recommended, not required; so can change this to return "" if it's causing problems - likely due to charset mismatches)
  * 
@@ -266,3 +227,200 @@ S3Request.prototype.getContentMd5_ = function() {
     return ""; 
   }
 };
+
+S3Request.prototype.updateForPresigned = function(credentials, datetime) {
+  var credString = this.credentialString(datetime);
+  var  qs = {
+    'X-Amz-Date': datetime,
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': this.service.accessKeyId + '/' + credString,
+    'X-Amz-Expires': this.headers[this.expiresHeader],
+    'X-Amz-SignedHeaders': this.signedHeaders()
+  };
+
+  if (credentials.sessionToken) {
+    qs['X-Amz-Security-Token'] = credentials.sessionToken;
+  }
+
+  if (this.headers['Content-Type']) {
+    qs['Content-Type'] = this.headers['Content-Type'];
+  }
+  if (this.headers['Content-MD5']) {
+    qs['Content-MD5'] = this.headers['Content-MD5'];
+  }
+  if (this.headers['Cache-Control']) {
+    qs['Cache-Control'] = this.headers['Cache-Control'];
+  }
+
+  for (var key in this.headers) {
+    if (key === this.expiresHeader) return;
+    if (this.isSignableHeader(key)) {
+      var lowerKey = key.toLowerCase();
+      // Metadata should be normalized
+      if (lowerKey.indexOf('x-amz-meta-') === 0) {
+        qs[lowerKey] = value;
+      } else if (lowerKey.indexOf('x-amz-') === 0) {
+        qs[key] = value;
+      }
+    }
+  }
+
+  var sep = this._getUrl().indexOf('?') >= 0 ? '&' : '?';
+  function queryParamsToString(params) {
+    var items = [];
+    for (var key in params) {
+      var value = params[key];
+      var ename = encodeURIComponent(key);
+      if (Array.isArray(value)) {
+        var vals = [];
+        for(var val in value) {vals.push(encodeURIComponent(val))}
+        items.push(ename + '=' + vals.sort().join('&' + ename + '='))
+      } else {
+        items.push(ename + '=' + encodeURIComponent(value))
+      }
+    }
+    return items.sort().join('&')
+  }
+  this.extQueryString += sep + queryParamsToString(qs);
+}
+
+S3Request.prototype.authorization = function(credentials, datetime) {
+  var parts = [];
+  var credString = this.credentialString(datetime);
+  parts.push('AWS4-HMAC-SHA256 Credential=' + this.service.accessKeyId + '/' + credString);
+  parts.push('SignedHeaders=' + this.signedHeaders());
+  parts.push('Signature=' + this.signature(credentials, datetime));
+  return parts.join(', ');
+}
+
+S3Request.prototype.signature = function(credentials, datetime) {
+  var sigingKey = this.getSignatureKey(
+    credentials,
+    datetime.substr(0, 8),
+    this.region,
+    this.serviceName
+  )
+  var signature = Utilities.computeHmacSha256Signature(Utilities.newBlob(this.stringToSign(datetime)).getBytes(), sigingKey)
+  return this.hex(signature)
+}
+
+S3Request.prototype.hex = function(values) {
+  return values.reduce(function(str, chr){
+    chr = (chr < 0 ? chr + 256 : chr).toString(16);
+    return str + (chr.length == 1 ? '0' : '') + chr;
+  }, '');
+}
+
+S3Request.prototype.getSignatureKey = function(key, dateStamp, regionName, serviceName) {
+  var kDate = Utilities.computeHmacSha256Signature(dateStamp, "AWS4" + key);
+  var kRegion = Utilities.computeHmacSha256Signature(Utilities.newBlob(regionName).getBytes(), kDate);
+  var kService = Utilities.computeHmacSha256Signature(Utilities.newBlob(serviceName).getBytes(), kRegion);
+  var kSigning = Utilities.computeHmacSha256Signature(Utilities.newBlob("aws4_request").getBytes(), kService);
+  return kSigning;
+}
+
+S3Request.prototype.stringToSign = function(datetime) {
+  var parts = [];
+  parts.push('AWS4-HMAC-SHA256');
+  parts.push(datetime);
+  parts.push(this.credentialString(datetime));
+  parts.push(this.hexEncodedHash(this.canonicalString()));
+  return parts.join('\n');
+}
+
+S3Request.prototype.canonicalString = function() {
+  var parts = [];
+  var [base, search] = this.getUrl().split("?", 2)
+  parts.push(this.httpMethod);
+  parts.push(this.canonicalUri(base));
+  parts.push(this.canonicalQueryString(search));
+  parts.push(this.canonicalHeaders() + '\n');
+  parts.push(this.signedHeaders());
+  parts.push(this.hexEncodedBodyHash());
+  return parts.join('\n');
+}
+
+S3Request.prototype.canonicalUri = function(uri) {
+  var m = uri.match(/https?:\/\/(.+)\.s3.*\.amazonaws\.com\/(.+)$/);
+  var object = m ? m[2] : ""
+  return "/" + encodeURIComponent(object || "").replace(/%2F/ig, '/')
+}
+
+S3Request.prototype.canonicalQueryString = function(values) {
+  if (!values) return ""
+  var parts = [];
+  var items = values.split("&");
+  for (var i in items) {
+    var [key, value] = items[i].split("=")
+    parts.push(encodeURIComponent(key.toLowerCase()) + "=" + encodeURIComponent(value))
+  }
+  return parts.sort().join("&")
+}
+
+S3Request.prototype.canonicalHeaders = function() {
+  var parts = [];
+  for (var item in this.headers) {
+    var key = item.toLowerCase();
+    if (this.isSignableHeader(key)) {
+      var header = key + ":" + this.canonicalHeaderValues(this.headers[item].toString())
+      parts.push(header) 
+    }
+  }
+  return parts.sort().join("\n")
+}
+
+S3Request.prototype.canonicalHeaderValues = function(values) {
+  return values.replace(/\s+/g, " ").trim();
+}
+
+S3Request.prototype.signedHeaders = function() {
+  var keys = [];
+  for (var key in this.headers) {
+    key = key.toLowerCase();
+    if (this.isSignableHeader(key)) {
+      keys.push(key);
+    }
+  }
+  return keys.sort().join(';');
+}
+
+S3Request.prototype.credentialString = function(datetime) {
+  return [
+    datetime.substr(0, 8),
+    this.region,
+    this.serviceName,
+    'aws4_request'
+  ].join('/');
+}
+
+S3Request.prototype.hexEncodedHash = function(string) {
+  return this.hex(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, string, Utilities.Charset.UTF_8));
+}
+
+S3Request.prototype.hexEncodedBodyHash = function() {
+  if (this.isPresigned() && !this.content.length) {
+    return 'UNSIGNED-PAYLOAD'
+  } else if (this.headers['X-Amz-Content-Sha256']) {
+    return this.headers['X-Amz-Content-Sha256']
+  } else {
+    return this.hexEncodedHash(this.content || '')
+  }
+}
+
+S3Request.prototype.isSignableHeader = function(key) {
+  if (key.match(/^x-amz/i)) return true;
+  var unsignableHeaders = [
+    'authorization',
+    'content-type',
+    'content-length',
+    'user-agent',
+    this.expiresHeader,
+    'expect',
+    'x-amzn-trace-id'
+  ];
+  return unsignableHeaders.indexOf(key) < 0
+}
+
+S3Request.prototype.isPresigned = function() {
+  return this.headers[this.expiresHeader] ? true : false;
+}

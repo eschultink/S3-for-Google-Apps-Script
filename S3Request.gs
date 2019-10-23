@@ -143,7 +143,7 @@ S3Request.prototype.execute = function(options) {
   }
 
   this.addAuthorization(credentials, this.date)
-  // To avoid the error of confliction in UrlFetchApp#fetch. UrlFetchApp#fetch adds a Host header.
+  // To avoid conflict with UrlFetchApp#fetch. UrlFetchApp#fetch adds a Host header.
   delete this.headers['Host']
 
   var params = {

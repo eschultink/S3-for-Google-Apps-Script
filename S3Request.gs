@@ -255,7 +255,7 @@ S3Request.prototype.updateForPresigned = function(credentials, datetime) {
   }
 
   var sep = this._getUrl().indexOf('?') >= 0 ? '&' : '?';
-  function queryParamsToString(params) {
+  var queryParamsToString = function(params) {
     var items = [];
     for (var key in params) {
       var value = params[key];

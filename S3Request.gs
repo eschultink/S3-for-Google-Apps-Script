@@ -247,9 +247,9 @@ S3Request.prototype.updateForPresigned = function(credentials, datetime) {
       var lowerKey = key.toLowerCase();
       // Metadata should be normalized
       if (lowerKey.indexOf('x-amz-meta-') === 0) {
-        qs[lowerKey] = value;
+        qs[lowerKey] = this.headers[key];
       } else if (lowerKey.indexOf('x-amz-') === 0) {
-        qs[key] = value;
+        qs[key] = this.headers[key];
       }
     }
   }
@@ -397,7 +397,8 @@ S3Request.prototype.hexEncodedBodyHash = function() {
 }
 
 S3Request.prototype.isSignableHeader = function(key) {
-  if (key.match(/^x-amz/i)) return true;
+  var lowerKey = key.toLowerCase()
+  if (lowerKey.indexOf('x-amz-') === 0) return true;
   var unsignableHeaders = [
     'authorization',
     'content-type',
@@ -407,7 +408,7 @@ S3Request.prototype.isSignableHeader = function(key) {
     'expect',
     'x-amzn-trace-id'
   ];
-  return unsignableHeaders.indexOf(key) < 0
+  return unsignableHeaders.indexOf(lowerKey) < 0
 }
 
 S3Request.prototype.isPresigned = function() {

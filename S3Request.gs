@@ -12,7 +12,7 @@ function S3Request(service) {
   this.bucket = ""; //gets turned into host (bucketName.s3.amazonaws.com)
   this.objectName = "";
   this.headers = {};
-  
+
   this.date = new Date();
   this.serviceName = 's3';
   this.region = 'us-east-1';
@@ -33,12 +33,12 @@ S3Request.prototype.setContentType = function (contentType) {
 
 S3Request.prototype.getContentType = function () {
   if (this.contentType) {
-    return this.contentType; 
+    return this.contentType;
   } else {
     //if no contentType has been explicitly set, default based on HTTP methods
     if (this.httpMethod == "PUT" || this.httpMethod == "POST") {
       //UrlFetchApp defaults to this for these HTTP methods
-      return "application/x-www-form-urlencoded"; 
+      return "application/x-www-form-urlencoded";
     }
   }
   return "";
@@ -49,10 +49,10 @@ S3Request.prototype.getContentType = function () {
  * @param {string} content request content encoded as a string
  * @throws {string} message if invalid input
  * @return {S3Request} this request, for chaining
- */ 
+ */
 S3Request.prototype.setContent = function(content) {
   if (typeof content != 'string') throw 'content must be passed as a string'
-  this.content = content; 
+  this.content = content;
   return this;
 };
 
@@ -63,7 +63,7 @@ S3Request.prototype.setContent = function(content) {
  */
 S3Request.prototype.setHttpMethod = function(method) {
   if (typeof method != 'string') throw "http method must be string";
-  this.httpMethod = method; 
+  this.httpMethod = method;
   return this;
 };
 
@@ -84,13 +84,13 @@ S3Request.prototype.setBucket = function(bucket) {
  */
 S3Request.prototype.setObjectName = function(objectName) {
   if (typeof objectName != 'string') throw "objectName must be string";
-  this.objectName = objectName; 
+  this.objectName = objectName;
   return this;
 };
 
 
 /* adds HTTP header to S3 request (see AWS S3 REST api documentation for possible values)
- * 
+ *
  * @param {string} name Header name
  * @param {string} value Header value
  * @throws {string} message if invalid input
@@ -99,14 +99,14 @@ S3Request.prototype.setObjectName = function(objectName) {
 S3Request.prototype.addHeader = function(name, value) {
   if (typeof name != 'string') throw "header name must be string";
   if (typeof value != 'string') throw "header value must be string";
-  this.headers[name] = /^[\x00-\x7F]*$/.test(value) ? value : encodeURIComponent(value); 
+  this.headers[name] = /^[\x00-\x7F]*$/.test(value) ? value : encodeURIComponent(value);
   return this;
 };
 
 S3Request.prototype._getUrl = function() {
   return "https://" + this.bucket.toLowerCase() + ".s3." + this.region + ".amazonaws.com/" + this.objectName;
 };
-/* gets Url for S3 request 
+/* gets Url for S3 request
  * @return {string} url to which request will be sent
  */
 S3Request.prototype.getUrl = function() {
@@ -116,11 +116,11 @@ S3Request.prototype.getUrl = function() {
  *
  * Supported options:
  *   logRequests - log requests (and responses) will be logged to Apps Script's Logger. default false.
- *   echoRequestToUrl - also send the request to this URL (useful for debugging Apps Script weirdness)   
+ *   echoRequestToUrl - also send the request to this URL (useful for debugging Apps Script weirdness)
  *
  * @param {Object} options object with properties corresponding to option values; see documentation
  * @throws {Object} AwsError on failure
- * @returns {goog.UrlFetchApp.HttpResponse} 
+ * @returns {goog.UrlFetchApp.HttpResponse}
  */
 S3Request.prototype.execute = function(options) {
   options = options || {};
@@ -130,26 +130,21 @@ S3Request.prototype.execute = function(options) {
     }
   }
 
-  var dateStr = this.date.toISOString().replace(/[:\-]|\.\d{3}/g, '');
-  if (this.isPresigned()) {
-    this.updateForPresigned(credentials, datetime);
-  } else {
-    this.headers['X-Amz-Date'] = dateStr;
+  delete this.headers['Authorization'];
+  delete this.headers['Date'];
+  delete this.headers['X-Amz-Date'];
+  this.headers['X-Amz-Content-Sha256'] = this.hexEncodedBodyHash();
+  this.headers['Host'] = this._getUrl().replace(/https?:\/\/(.+amazonaws\.com).*/, '$1');
+
+  var credentials = {
+    accessKeyId: this.service.accessKeyId,
+    secretAccessKey: this.service.secretAccessKey,
+    sessionToken: options.sessionToken
   }
 
-  if (this.content.length > 0) {
-    this.headers['X-Amz-Content-Sha256'] = this.hexEncodedBodyHash();
-    this.headers['x-amz-storage-class'] = 'REDUCED_REDUNDANCY';
-    // this.headers['Content-Encoding'] = 'aws-chunked'
-    // this.headers['Content-Length'] = 1111
-    // this.headers['x-amz-decoded-content-length'] = this.content.length;
-    // this.headers["Content-MD5"] = this.getContentMd5_();
-  }
-
-  this.headers.Host = this._getUrl().replace(/https?:\/\/(.+amazonaws\.com).*/, '$1');
-  this.headers.Date = this.date.toUTCString();
-  this.headers.Authorization = this.authorization(this.service.secretAccessKey, dateStr)
-  delete this.headers.Host
+  this.addAuthorization(credentials, this.date)
+  // To avoid the error of confliction in UrlFetchApp#fetch. UrlFetchApp#fetch adds a Host header.
+  delete this.headers['Host']
 
   var params = {
     method: this.httpMethod,
@@ -162,26 +157,23 @@ S3Request.prototype.execute = function(options) {
   if (this.getContentType()) {
     params.contentType = this.getContentType();
   }
-  
+
   var response = UrlFetchApp.fetch(this.getUrl(), params);
 
-
-  
   //debugging stuff
-  var request = UrlFetchApp.getRequest(this.getUrl(), params);  
-
+  var request = UrlFetchApp.getRequest(this.getUrl(), params);
 
   //Log request and response
   this.lastExchangeLog = this.service.logExchange_(request, response);
   if (options.logRequests) {
     Logger.log(this.service.getLastExchangeLog());
   }
-  
+
   //used in case you want to peak at the actual raw HTTP request coming out of Google's UrlFetchApp infrastructure
   if (options.echoRequestToUrl) {
-    UrlFetchApp.fetch(options.echoRequestToUrl, params); 
+    UrlFetchApp.fetch(options.echoRequestToUrl, params);
   }
-  
+
   //check for error codes (AWS uses variants of 200s for flavors of success)
   if (response.getResponseCode() > 299) {
     //convert XML error response from AWS into JS object, and give it a name
@@ -189,51 +181,48 @@ S3Request.prototype.execute = function(options) {
     error.name = "AwsError";
     try {
       var errorXmlElements = XmlService.parse(response.getContentText()).getRootElement().getChildren();
-    
       for (i in errorXmlElements) {
-        var name = errorXmlElements[i].getName(); 
+        var name = errorXmlElements[i].getName();
         name = name.charAt(0).toLowerCase() + name.slice(1);
         error[name] = errorXmlElements[i].getText();
       }
-      error.toString = function() { return "AWS Error - "+this.code+": "+this.message; }; 
-     
+      error.toString = function() { return "AWS Error - "+this.code+": "+this.message; };
       error.httpRequestLog = this.service.getLastExchangeLog();
     } catch (e) {
       //error parsing XML error response from AWS (will obscure actual error)
- 
       error.message = "AWS returned HTTP code " + response.getResponseCode() + ", but error content could not be parsed."
-      
       error.toString = function () { return this.message; };
-      
       error.httpRequestLog = this.service.getLastExchangeLog();
     }
-    
     throw error;
   }
-  
+
   return response;
 };
 
-/* calculates Md5 for the content (http request body) of the S3 request
- *   (Content-MD5 on S3 is recommended, not required; so can change this to return "" if it's causing problems - likely due to charset mismatches)
- * 
- * @private
- * @return {string} base64 encoded MD5 hash of content
- */
-S3Request.prototype.getContentMd5_ = function() {
-  if (this.content.length > 0) {
-    return Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, this.content, Utilities.Charset.UTF_8));
+S3Request.prototype.addAuthorization = function(credentials, date) {
+  var datetime = date.toISOString().replace(/[:\-]|\.\d{3}/g, '');
+  if (this.isPresigned()) {
+    this.updateForPresigned(credentials, datetime);
   } else {
-    return ""; 
+    this.addHeaders(credentials, datetime);
   }
-};
+  this.headers['Authorization'] = this.authorization(credentials, datetime)
+}
+
+S3Request.prototype.addHeaders = function (credentials, datetime) {
+  this.headers['X-Amz-Date'] = datetime;
+  if (credentials.sessionToken) {
+    this.headers['x-amz-security-token'] = credentials.sessionToken;
+  }
+}
 
 S3Request.prototype.updateForPresigned = function(credentials, datetime) {
   var credString = this.credentialString(datetime);
-  var  qs = {
+  var qs = {
     'X-Amz-Date': datetime,
     'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
-    'X-Amz-Credential': this.service.accessKeyId + '/' + credString,
+    'X-Amz-Credential': credentials.accessKeyId + '/' + credString,
     'X-Amz-Expires': this.headers[this.expiresHeader],
     'X-Amz-SignedHeaders': this.signedHeaders()
   };
@@ -287,7 +276,7 @@ S3Request.prototype.updateForPresigned = function(credentials, datetime) {
 S3Request.prototype.authorization = function(credentials, datetime) {
   var parts = [];
   var credString = this.credentialString(datetime);
-  parts.push('AWS4-HMAC-SHA256 Credential=' + this.service.accessKeyId + '/' + credString);
+  parts.push('AWS4-HMAC-SHA256 Credential=' + credentials.accessKeyId + '/' + credString);
   parts.push('SignedHeaders=' + this.signedHeaders());
   parts.push('Signature=' + this.signature(credentials, datetime));
   return parts.join(', ');
@@ -295,7 +284,7 @@ S3Request.prototype.authorization = function(credentials, datetime) {
 
 S3Request.prototype.signature = function(credentials, datetime) {
   var sigingKey = this.getSignatureKey(
-    credentials,
+    credentials.secretAccessKey,
     datetime.substr(0, 8),
     this.region,
     this.serviceName
@@ -343,7 +332,7 @@ S3Request.prototype.canonicalString = function() {
 S3Request.prototype.canonicalUri = function(uri) {
   var m = uri.match(/https?:\/\/(.+)\.s3.*\.amazonaws\.com\/(.+)$/);
   var object = m ? m[2] : ""
-  return "/" + encodeURIComponent(object || "").replace(/%2F/ig, '/')
+  return "/" + encodeURIComponent(object).replace(/%2F/ig, '/')
 }
 
 S3Request.prototype.canonicalQueryString = function(values) {
@@ -363,7 +352,7 @@ S3Request.prototype.canonicalHeaders = function() {
     var key = item.toLowerCase();
     if (this.isSignableHeader(key)) {
       var header = key + ":" + this.canonicalHeaderValues(this.headers[item].toString())
-      parts.push(header) 
+      parts.push(header)
     }
   }
   return parts.sort().join("\n")

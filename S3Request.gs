@@ -262,7 +262,7 @@ S3Request.prototype.updateForPresigned = function(credentials, datetime) {
       var ename = encodeURIComponent(key);
       if (Array.isArray(value)) {
         var vals = [];
-        for(var val in value) {vals.push(encodeURIComponent(val))}
+        for(var i in value) { vals.push(encodeURIComponent(value[i])) }
         items.push(ename + '=' + vals.sort().join('&' + ename + '='))
       } else {
         items.push(ename + '=' + encodeURIComponent(value))

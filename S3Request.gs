@@ -99,7 +99,7 @@ S3Request.prototype.setObjectName = function(objectName) {
 S3Request.prototype.addHeader = function(name, value) {
   if (typeof name != 'string') throw "header name must be string";
   if (typeof value != 'string') throw "header value must be string";
-  this.headers[name] = /^[\x00-\x7F]*$/.test(value) ? value : encodeURIComponent(value);
+  this.headers[name] = encodeURIComponent(value);
   return this;
 };
 

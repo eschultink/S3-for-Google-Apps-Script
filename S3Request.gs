@@ -1,3 +1,9 @@
+/*
+ * Most code of AWS Signature Version 4 is ported from the aws-sdk-js
+ * https://github.com/aws/aws-sdk-js/blob/7cc9ae5b0d7b2935fa69dee945d5f3e6e638c660/lib/signers/v4.js
+ * 
+ */
+
 /* constructs an S3Request to an S3 service
  *
  * @constructor

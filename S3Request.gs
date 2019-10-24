@@ -125,7 +125,8 @@ S3Request.prototype.getUrl = function() {
 S3Request.prototype.execute = function(options) {
   options = options || {};
   for (var key in options) {
-    if (key.match(/^x-amz/i)) {
+    var lowerKey = key.toLowerCase()
+    if (lowerKey.indexOf('x-amz-') === 0) {
       this.addHeader(key, options[key])
     }
   }
@@ -242,7 +243,7 @@ S3Request.prototype.updateForPresigned = function(credentials, datetime) {
   }
 
   for (var key in this.headers) {
-    if (key === this.expiresHeader) return;
+    if (key === this.expiresHeader) continue;
     if (this.isSignableHeader(key)) {
       var lowerKey = key.toLowerCase();
       // Metadata should be normalized

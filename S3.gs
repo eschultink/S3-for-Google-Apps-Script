@@ -55,7 +55,7 @@ function getInstance(accessKeyId, secretAccessKey, options) {
 function S3(accessKeyId, secretAccessKey, options) {
   if (typeof accessKeyId !== 'string') throw "Must pass accessKeyId to S3 constructor";
   if (typeof secretAccessKey !== 'string') throw "Must pass secretAcessKey to S3 constructor";
-  
+
   this.accessKeyId = accessKeyId;
   this.secretAccessKey = secretAccessKey;
   this.options = options | {};
@@ -70,28 +70,30 @@ function S3(accessKeyId, secretAccessKey, options) {
  * @throws {Object} AwsError on failure
  * @return void
  */
-S3.prototype.createBucket = function (bucket, options) {
-  options = options || {}; 
-  
-  
+S3.prototype.createBucket = function (bucket, options, bucketOptions) {
+  options = options || {};
+
+
   var request = new S3Request(this);
   request.setHttpMethod('PUT');
-  
+
   //this is dumb and is optional from AWS perspective
   //but UrlFetchApp will default a Content-Type header to application/xml-www-form-url-encoded or whatever, which 
   //screws up the signature of the request
   request.setContentType('text/plain');
-  
+
   //support setting of ACL
   if (typeof options["x-amz-acl"] == 'undefined') {
     options["x-amz-acl"] = "private";
   }
   request.addHeader("x-amz-acl", options["x-amz-acl"]);
-  
-  request.setBucket(bucket);
-  
+
+  bucketOptions['region'] && request.setRegion(bucketOptions['region']);
+
+  request.setBucket(bucket, bucketOptions['subDomain'] ? bucketOptions['subDomain'] : false);
+
   request.execute(options);
-  
+
 };
 
 /* deletes bucket from S3 
@@ -101,13 +103,15 @@ S3.prototype.createBucket = function (bucket, options) {
  * @throws {Object} AwsError on failure
  * @return void
  */
-S3.prototype.deleteBucket = function (bucket, options) {
+S3.prototype.deleteBucket = function (bucket, options, bucketOptions) {
   options = options || {};
 
   var request = new S3Request(this);
   request.setHttpMethod('DELETE');
-  
-  request.setBucket(bucket);
+
+  bucketOptions['region'] && request.setRegion(bucketOptions['region']);
+  request.setBucket(bucket, bucketOptions['subDomain'] ? bucketOptions['subDomain'] : false);
+
   request.execute(options);
 };
 
@@ -120,29 +124,30 @@ S3.prototype.deleteBucket = function (bucket, options) {
  * @throws {Object} AwsError on failure
  * @return void
  */
-S3.prototype.putObject = function (bucket, objectName, object, options) {
+S3.prototype.putObject = function (bucket, objectName, object, options, bucketOptions) {
   options = options || {};
 
   var request = new S3Request(this);
   request.setHttpMethod('PUT');
-  request.setBucket(bucket);
+  bucketOptions['region'] && request.setRegion(bucketOptions['region']);
+  request.setBucket(bucket, bucketOptions['subDomain'] ? bucketOptions['subDomain'] : false);
   request.setObjectName(objectName);
-  
+
   var failedBlobDuckTest = !(typeof object.copyBlob == 'function' &&
-                      typeof object.getDataAsString == 'function' &&
-                      typeof object.getContentType == 'function'
-                      );
-  
+    typeof object.getDataAsString == 'function' &&
+    typeof object.getContentType == 'function'
+  );
+
   //wrap object in a Blob if it doesn't appear to be one
   if (failedBlobDuckTest) {
     object = Utilities.newBlob(JSON.stringify(object), "application/json");
     object.setName(objectName);
   }
-  
+
   request.setContent(object.getDataAsString());
   request.setContentType(object.getContentType());
-  
-  request.execute(options);  
+
+  request.execute(options);
 };
 
 /* gets object from S3 bucket
@@ -153,13 +158,14 @@ S3.prototype.putObject = function (bucket, objectName, object, options) {
  * @throws {Object} AwsError on failure
  * @return {Blob|Object} data value, converted from JSON or as a Blob if it was something else; null if it doesn't exist
  */
-S3.prototype.getObject = function (bucket, objectName, options) {
+S3.prototype.getObject = function (bucket, objectName, options, bucketOptions) {
   options = options || {};
-  
+
   var request = new S3Request(this);
   request.setHttpMethod('GET');
-  
-  request.setBucket(bucket);
+  bucketOptions['region'] && request.setRegion(bucketOptions['region']);
+
+  request.setBucket(bucket, bucketOptions['subDomain'] ? bucketOptions['subDomain'] : false);
   request.setObjectName(objectName);
   try {
     var responseBlob = request.execute(options).getBlob();
@@ -168,13 +174,13 @@ S3.prototype.getObject = function (bucket, objectName, options) {
       return null;
     } else {
       //some other type of error, rethrow
-      throw e; 
+      throw e;
     }
   }
-  
+
   //not sure this is better to put here, rather than in S3Request class
   if (responseBlob.getContentType() == "application/json") {
-     return JSON.parse(responseBlob.getDataAsString());
+    return JSON.parse(responseBlob.getDataAsString());
   }
   return responseBlob;
 };
@@ -187,22 +193,23 @@ S3.prototype.getObject = function (bucket, objectName, options) {
  * @throws {Object} AwsError on failure
  * @return void
  */
-S3.prototype.deleteObject = function (bucket, objectName, options) {
-  options = options || {};  
-  
+S3.prototype.deleteObject = function (bucket, objectName, options, bucketOptions) {
+  options = options || {};
+
   var request = new S3Request(this);
   request.setHttpMethod('DELETE');
-  
-  request.setBucket(bucket);
+  bucketOptions['region'] && request.setRegion(bucketOptions['region']);
+
+  request.setBucket(bucket, bucketOptions['subDomain'] ? bucketOptions['subDomain'] : false);
   request.setObjectName(objectName);
-  
-  request.execute(options);  
+
+  request.execute(options);
 };
 
 
 //for debugging
-S3.prototype.getLastExchangeLog = function() {
-  return this.lastExchangeLog; 
+S3.prototype.getLastExchangeLog = function () {
+  return this.lastExchangeLog;
 }
 
 /*
@@ -211,21 +218,21 @@ S3.prototype.getLastExchangeLog = function() {
  * @param {Object} request object, from UrlFetchApp.getRequest()
  * @param {goog.HTTPResponse} response object, from UrlFetchApp
  */
-S3.prototype.logExchange_ = function(request, response) {
+S3.prototype.logExchange_ = function (request, response) {
   var logContent = "";
   logContent += "\n-- REQUEST --\n";
   for (i in request) {
     if (typeof request[i] == 'string' && request[i].length > 1000) {
       //truncate to avoid making log unreadable
-      request[i] = request[i].slice(0, 1000) + " ... [TRUNCATED]"; 
+      request[i] = request[i].slice(0, 1000) + " ... [TRUNCATED]";
     }
     logContent += Utilities.formatString("\t%s: %s\n", i, request[i]);
   }
-    
+
   logContent += "-- RESPONSE --\n";
   logContent += "HTTP Status Code: " + response.getResponseCode() + "\n";
   logContent += "Headers:\n";
-  
+
   var headers = response.getHeaders();
   for (i in headers) {
     logContent += Utilities.formatString("\t%s: %s\n", i, headers[i]);

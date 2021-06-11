@@ -16,6 +16,7 @@ function S3Request(service) {
   this.contentType = "";
   this.content = ""; //content of the HTTP request
   this.bucket = ""; //gets turned into host (bucketName.s3.amazonaws.com)
+  this.subDomainBucket = false;
   this.objectName = "";
   this.headers = {};
 
@@ -75,14 +76,28 @@ S3Request.prototype.setHttpMethod = function(method) {
 
 /* sets bucket name for the request
  * @param {string} bucket name of bucket on which request operates
+ * @param {boolean} subdomain form of the bucket (when a bucket has dots, like api.myDomain.com)
  * @throws {string} message if invalid input
  * @return {S3Request} this request, for chaining
  */
-S3Request.prototype.setBucket = function(bucket) {
+S3Request.prototype.setBucket = function(bucket, subDomain = false) {
   if (typeof bucket != 'string') throw "bucket name must be string";
   this.bucket = bucket;
+  this.subDomainBucket = subDomain
   return this;
 };
+
+/* sets Http method for set Region
+ * @param {string} method http method for request
+ * @throws {string} message if invalid input
+ * @return {S3Request} this request, for chaining
+ */
+S3Request.prototype.setRegion = function (region) {
+  if (typeof region != 'string') throw "aws region must be string";
+  this.region = region;
+  return this;
+};
+
 /* sets objectName (key) for request
  * @param {string} objectName name that uniquely identifies object within bucket
  * @throws {string} message if invalid input
@@ -110,7 +125,10 @@ S3Request.prototype.addHeader = function(name, value) {
 };
 
 S3Request.prototype._getUrl = function() {
-  return "https://" + this.bucket.toLowerCase() + ".s3." + this.region + ".amazonaws.com/" + this.objectName;
+  if(this.subDomainBucket)
+    return "https://" + this.bucket.toLowerCase() + "/" + this.objectName;
+  else 
+    return "https://" + this.bucket.toLowerCase() + ".s3." + this.region + ".amazonaws.com/" + this.objectName;
 };
 /* gets Url for S3 request
  * @return {string} url to which request will be sent
@@ -141,7 +159,7 @@ S3Request.prototype.execute = function(options) {
   delete this.headers['Date'];
   delete this.headers['X-Amz-Date'];
   this.headers['X-Amz-Content-Sha256'] = this.hexEncodedBodyHash();
-  this.headers['Host'] = this._getUrl().replace(/https?:\/\/(.+amazonaws\.com).*/, '$1');
+  this.headers['Host'] = this._getUrl().replace(/https?:\/\/(.+)\/.*/, '$1');
 
   var credentials = {
     accessKeyId: this.service.accessKeyId,
@@ -337,7 +355,7 @@ S3Request.prototype.canonicalString = function() {
 }
 
 S3Request.prototype.canonicalUri = function(uri) {
-  var m = uri.match(/https?:\/\/(.+)\.s3.*\.amazonaws\.com\/(.+)$/);
+  var m = uri.match(/https?:\/\/(.+)\/(.+)$/);
   var object = m ? m[2] : ""
   return "/" + encodeURIComponent(object).replace(/%2F/ig, '/')
 }
